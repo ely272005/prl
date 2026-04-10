@@ -153,6 +153,8 @@ class TestBuildPacket:
 
         short = result["short"]
         assert "candidate_id" in short
+        assert "candidate_id_method" in short
+        assert short["candidate_id_method"] in ("content_hash", "metadata_fallback")
         assert "confidence" in short
         assert short["confidence"] in ("HIGH", "MEDIUM", "LOW")
         assert "pnl" in short
@@ -186,3 +188,61 @@ class TestBuildPacket:
         assert isinstance(short["warnings"], list)
         # Should have sample-only warnings
         assert any("sample" in w.lower() for w in short["warnings"])
+
+    def test_candidate_id_content_hash(self, output_dir, dashboard_dict, tmp_path):
+        """When a real strategy file exists, candidate_id uses content hash."""
+        strategy_file = tmp_path / "my_strategy.py"
+        strategy_file.write_text("class Trader:\n    pass\n")
+
+        ledger = build_event_ledger(output_dir)
+        fill_decomp = aggregate_fill_decomposition(ledger["session_ledgers"])
+        regimes = summarize_regimes(ledger["session_ledgers"])
+        result = build_packet(
+            dashboard_dict, ledger, fill_decomp, regimes,
+            strategy_path=str(strategy_file),
+        )
+        short = result["short"]
+        assert short["candidate_id_method"] == "content_hash"
+
+        # Same file content → same candidate_id
+        strategy_file2 = tmp_path / "copy_strategy.py"
+        strategy_file2.write_text("class Trader:\n    pass\n")
+        result2 = build_packet(
+            dashboard_dict, ledger, fill_decomp, regimes,
+            strategy_path=str(strategy_file2),
+        )
+        assert result2["short"]["candidate_id"] == short["candidate_id"]
+
+        # Different file content → different candidate_id
+        strategy_file3 = tmp_path / "other_strategy.py"
+        strategy_file3.write_text("class Trader:\n    def run(self): pass\n")
+        result3 = build_packet(
+            dashboard_dict, ledger, fill_decomp, regimes,
+            strategy_path=str(strategy_file3),
+        )
+        assert result3["short"]["candidate_id"] != short["candidate_id"]
+        assert result3["short"]["candidate_id_method"] == "content_hash"
+
+    def test_candidate_id_metadata_fallback(self, output_dir, dashboard_dict):
+        """When strategy file doesn't exist, falls back to metadata hash."""
+        ledger = build_event_ledger(output_dir)
+        fill_decomp = aggregate_fill_decomposition(ledger["session_ledgers"])
+        regimes = summarize_regimes(ledger["session_ledgers"])
+        result = build_packet(
+            dashboard_dict, ledger, fill_decomp, regimes,
+            strategy_path="/nonexistent/strategy.py",
+        )
+        short = result["short"]
+        assert short["candidate_id_method"] == "metadata_fallback"
+
+    def test_candidate_id_empty_path_fallback(self, output_dir, dashboard_dict):
+        """When no strategy path given, falls back to metadata hash."""
+        ledger = build_event_ledger(output_dir)
+        fill_decomp = aggregate_fill_decomposition(ledger["session_ledgers"])
+        regimes = summarize_regimes(ledger["session_ledgers"])
+        result = build_packet(
+            dashboard_dict, ledger, fill_decomp, regimes,
+            strategy_path="",
+        )
+        short = result["short"]
+        assert short["candidate_id_method"] == "metadata_fallback"

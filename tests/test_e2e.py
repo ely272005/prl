@@ -38,6 +38,7 @@ class TestEndToEnd:
         full = packet["full"]
 
         # Validate short structure
+        assert short["candidate_id_method"] in ("content_hash", "metadata_fallback")
         assert short["confidence"] in ("HIGH", "MEDIUM", "LOW")
         assert short["pnl"]["mean"] > 0
         assert short["fill_quality"] is not None

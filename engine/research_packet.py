@@ -683,15 +683,25 @@ def build_packet(
         "sample_sessions": sample_count,
     }
 
-    # --- Build candidate_id as content hash ---
-    id_string = f"{candidate['strategy_path']}:{candidate['seed']}:{session_count}"
-    candidate_id = hashlib.sha256(id_string.encode()).hexdigest()[:16]
+    # --- Build candidate_id ---
+    # Prefer content hash of actual strategy file for true code identity.
+    # Fall back to metadata hash if the file is missing or no path given.
+    strategy_file = Path(candidate["strategy_path"]) if candidate["strategy_path"] else None
+    if strategy_file and strategy_file.is_file():
+        file_bytes = strategy_file.read_bytes()
+        candidate_id = hashlib.sha256(file_bytes).hexdigest()[:16]
+        candidate_id_method = "content_hash"
+    else:
+        id_string = f"{candidate['strategy_path']}:{candidate['seed']}:{session_count}"
+        candidate_id = hashlib.sha256(id_string.encode()).hexdigest()[:16]
+        candidate_id_method = "metadata_fallback"
 
     # =======================================================================
     # PACKET SHORT
     # =======================================================================
     packet_short = {
         "candidate_id": candidate_id,
+        "candidate_id_method": candidate_id_method,
         "candidate": candidate,
         "confidence": confidence,
         "confidence_reason": confidence_reason,

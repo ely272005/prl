@@ -43,16 +43,36 @@ def load_or_build_dashboard(output_dir: Path, dashboard_path: Path | None) -> di
         with default_path.open() as f:
             return json.load(f)
 
+    # Derive true session count from session_summary.csv (one row per MC session)
+    summary_csv = output_dir / "session_summary.csv"
+    if summary_csv.exists():
+        import csv
+        with summary_csv.open() as f:
+            session_count = sum(1 for _ in csv.reader(f)) - 1  # subtract header
+    else:
+        # Last resort: count sample-session dirs (known undercount)
+        session_count = len(list((output_dir / "sessions").iterdir())) if (output_dir / "sessions").exists() else 0
+        print(
+            f"Warning: session_summary.csv not found. "
+            f"Using sample-session directory count ({session_count}) as session_count — "
+            "this may undercount the true Monte Carlo session count.",
+            file=sys.stderr,
+        )
+
     # Build from upstream if available
     try:
         from prosperity3bt.monte_carlo import build_dashboard
         strategy_path = output_dir / "strategy.py"  # placeholder
-        session_count = len(list((output_dir / "sessions").iterdir())) if (output_dir / "sessions").exists() else 0
         return build_dashboard(output_dir, strategy_path, session_count, {})
     except (ImportError, Exception) as exc:
         print(f"Warning: could not build dashboard: {exc}", file=sys.stderr)
         print("Proceeding with minimal dashboard stub.", file=sys.stderr)
-        return {"kind": "monte_carlo_dashboard", "meta": {}, "overall": {}, "sessions": []}
+        return {
+            "kind": "monte_carlo_dashboard",
+            "meta": {"sessionCount": session_count},
+            "overall": {},
+            "sessions": [],
+        }
 
 
 def main() -> int:
