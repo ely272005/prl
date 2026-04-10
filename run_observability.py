@@ -83,6 +83,7 @@ def main() -> int:
     parser.add_argument("--parent-run-id", default=None, help="Parent run ID for lineage tracking")
     parser.add_argument("--db-path", type=Path, default=None, help="SQLite DB path for packet store")
     parser.add_argument("--output-json", type=Path, default=None, help="Write packet short to JSON file")
+    parser.add_argument("--ticks-per-session", type=int, default=None, help="Ticks per session (auto-detected if omitted)")
     args = parser.parse_args()
 
     output_dir = args.output_dir.resolve()
@@ -118,6 +119,7 @@ def main() -> int:
         fill_decomp=fill_decomp,
         regime_summary=regime_summary,
         strategy_path=args.strategy_path,
+        ticks_per_session=args.ticks_per_session,
     )
 
     short = packet["short"]
@@ -153,6 +155,11 @@ def main() -> int:
     if short.get("drawdown"):
         dd = short["drawdown"]
         print(f"Mean max DD:   {dd['mean_max_drawdown']:.2f}")
+    eff = short.get("efficiency", {})
+    if eff.get("pnl_per_fill") is not None:
+        print(f"PnL/fill:      {eff['pnl_per_fill']:.4f}")
+    if eff.get("pnl_per_tick") is not None:
+        print(f"PnL/tick:      {eff['pnl_per_tick']:.4f}")
     print(f"Kill:          {short['kill']['recommended']} (strength={short['kill']['strength']})")
     print(f"Promote:       {short['promote']['recommended']} (strength={short['promote']['strength']})")
     print(f"\nDiagnosis: {short['diagnosis']}")

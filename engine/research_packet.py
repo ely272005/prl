@@ -367,31 +367,52 @@ def compute_promote(
     dist: dict[str, Any],
     confidence: str,
     drawdown: dict[str, Any],
+    pnl_per_fill: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Promote recommendation: is the strategy strong enough to advance?"""
+    """Promote recommendation: is the strategy strong enough to advance?
+
+    Gates (all must pass):
+      1. confidence == HIGH
+      2. CI lower bound > 0
+      3. positive_rate > 0.60
+      4. sharpe > 5.0 (calibrated: TOP=15.6, MID=7.5, LOW=3.6 — LOW fails)
+      5. |mean_dd| / mean_pnl < 0.15 (calibrated: TOP=0.019, MID=0.060, LOW=0.185)
+      6. pnl_per_fill > 0.30 if available (calibrated: TOP=0.68, MID=0.71, LOW=0.17)
+    """
     mean_ci_low = dist.get("meanConfidenceLow95", dist.get("mean_confidence_low_95", 0.0))
     positive_rate = dist.get("positiveRate", dist.get("positive_rate", 0.5))
     sharpe = dist.get("sharpeLike", dist.get("sharpe_like", 0.0))
     mean_val = dist.get("mean", 0.0)
     mean_dd = drawdown.get("mean_max_drawdown", 0.0)
 
-    # Tolerable drawdown: |mean_dd| < 3 * mean_pnl (if mean_pnl > 0)
-    dd_ok = abs(mean_dd) < 3 * mean_val if mean_val > 0 else False
+    # Gate checks
+    dd_ratio = abs(mean_dd) / mean_val if mean_val > 0 else 999.0
+    dd_ok = dd_ratio < 0.15
+
+    efficiency_ok = True
+    if pnl_per_fill is not None:
+        efficiency_ok = pnl_per_fill > 0.30
 
     promote = (
-        mean_ci_low > 0
+        confidence == "HIGH"
+        and mean_ci_low > 0
         and positive_rate > 0.60
-        and sharpe > 0.3
+        and sharpe > 5.0
         and dd_ok
-        and confidence == "HIGH"
+        and efficiency_ok
     )
     strength = round(sharpe, 4)
 
     if promote:
-        reason = (
-            f"95% CI lower bound ({mean_ci_low:.1f}) is positive, "
-            f"Sharpe-like={sharpe:.2f}, {positive_rate:.0%} profitable."
-        )
+        parts = [
+            f"CI lower bound ({mean_ci_low:.1f}) positive",
+            f"Sharpe={sharpe:.2f}",
+            f"{positive_rate:.0%} profitable",
+            f"DD/PnL ratio={dd_ratio:.3f}",
+        ]
+        if pnl_per_fill is not None:
+            parts.append(f"PnL/fill={pnl_per_fill:.2f}")
+        reason = "Promoted: " + "; ".join(parts) + "."
     elif confidence != "HIGH":
         reason = f"Confidence is {confidence} — need HIGH for promotion. Run more sessions."
     else:
@@ -400,10 +421,12 @@ def compute_promote(
             parts.append(f"CI lower bound ({mean_ci_low:.1f}) includes zero")
         if positive_rate <= 0.60:
             parts.append(f"positive rate {positive_rate:.0%} <= 60%")
-        if sharpe <= 0.3:
-            parts.append(f"Sharpe-like {sharpe:.2f} <= 0.3")
+        if sharpe <= 5.0:
+            parts.append(f"Sharpe-like {sharpe:.2f} <= 5.0")
         if not dd_ok:
-            parts.append("drawdown exceeds 3x mean P&L")
+            parts.append(f"DD/PnL ratio {dd_ratio:.3f} >= 0.15")
+        if not efficiency_ok:
+            parts.append(f"PnL/fill {pnl_per_fill:.2f} <= 0.30")
         reason = "Not promoted: " + "; ".join(parts) + "."
 
     return {"recommended": promote, "strength": strength, "reason": reason}
@@ -543,6 +566,7 @@ def build_packet(
     fill_decomp: dict[str, Any],
     regime_summary: dict[str, Any],
     strategy_path: str = "",
+    ticks_per_session: Optional[int] = None,
 ) -> dict[str, Any]:
     """Build Packet Short and Packet Full from all inputs.
 
@@ -552,6 +576,8 @@ def build_packet(
         fill_decomp: Output of aggregate_fill_decomposition().
         regime_summary: Output of summarize_regimes().
         strategy_path: Path to the strategy file.
+        ticks_per_session: Number of ticks per session (for normalization).
+            Auto-detected from sample traces if not provided.
 
     Returns:
         Dict with keys "short" and "full".
@@ -660,9 +686,51 @@ def build_packet(
     # --- PnL at risk ---
     pnl_at_risk = compute_pnl_at_risk(session_summaries, mean_spread)
 
+    # --- Efficiency metrics (Task 2) ---
+    total_strategy_fills = fill_decomp.get("provenance", {}).get("total_strategy_fills", 0)
+    pnl_per_fill: Optional[float] = None
+    if total_strategy_fills > 0 and sample_count > 0:
+        # Per-session average fills, then mean_pnl / per_session_fills
+        fills_per_session = total_strategy_fills / sample_count
+        pnl_per_fill = total_dist["mean"] / fills_per_session if fills_per_session > 0 else None
+
+    # Auto-detect ticks_per_session from sample traces if not provided
+    detected_ticks: Optional[int] = None
+    if ticks_per_session is None:
+        for _sid, ledger_data in session_ledgers.items():
+            traces = ledger_data.get("traces")
+            if traces is not None and not traces.empty:
+                # Count unique timestamps for one product
+                for _product, grp in traces.groupby("product"):
+                    detected_ticks = len(grp)
+                    break
+            if detected_ticks is not None:
+                break
+    effective_ticks = ticks_per_session or detected_ticks
+
+    pnl_per_tick: Optional[float] = None
+    if effective_ticks is not None and effective_ticks > 0:
+        pnl_per_tick = total_dist["mean"] / effective_ticks
+
+    # --- Normalization metadata (Task 3) ---
+    scale = {
+        "session_count": session_count,
+        "sample_session_count": sample_count,
+        "ticks_per_session": effective_ticks,
+        "ticks_per_session_source": (
+            "provided" if ticks_per_session is not None
+            else ("auto_detected" if detected_ticks is not None else "unknown")
+        ),
+        "pnl_scope": "all_sessions",
+        "fill_and_drawdown_scope": "sample_sessions",
+    }
+
     # --- Kill / Promote ---
     kill = compute_kill(overall.get("totalPnl", {}), confidence)
-    promote = compute_promote(overall.get("totalPnl", {}), confidence, drawdown)
+    promote = compute_promote(
+        overall.get("totalPnl", {}), confidence, drawdown,
+        pnl_per_fill=pnl_per_fill,
+    )
 
     # --- Correlation ---
     corr = overall.get("emeraldTomatoCorrelation", overall.get("emerald_tomato_correlation", 0.0))
@@ -740,6 +808,17 @@ def build_packet(
         "drawdown": drawdown_short,
         "concentration": concentration,
         "end_of_session_risk": pnl_at_risk,
+        "efficiency": {
+            "pnl_per_fill": pnl_per_fill,
+            "pnl_per_tick": pnl_per_tick,
+            "total_strategy_fills": total_strategy_fills,
+            "fills_per_session": (
+                total_strategy_fills / sample_count if sample_count > 0 else None
+            ),
+        },
+        "scale": scale,
+        "simulation_confidence": confidence,
+        "external_validity_note": "Not calibrated against official results.",
         "kill": kill,
         "promote": promote,
         "diagnosis": diagnosis,

@@ -95,37 +95,78 @@ class TestComputeKill:
 
 class TestComputePromote:
     def test_promote_triggered(self):
+        """Strong strategy: high sharpe, tight DD, good efficiency."""
         dist = {
-            "meanConfidenceLow95": 10.0,
-            "positiveRate": 0.75,
-            "sharpeLike": 0.5,
-            "mean": 100.0,
+            "meanConfidenceLow95": 1000.0,
+            "positiveRate": 1.0,
+            "sharpeLike": 15.0,
+            "mean": 16000.0,
         }
-        dd = {"mean_max_drawdown": -100.0}  # abs < 3 * 100
-        result = compute_promote(dist, "HIGH", dd)
+        dd = {"mean_max_drawdown": -300.0}  # DD/PnL = 0.019
+        result = compute_promote(dist, "HIGH", dd, pnl_per_fill=0.68)
+        assert result["recommended"] is True
+
+    def test_promote_without_pnl_per_fill(self):
+        """Promote still works when pnl_per_fill is not available."""
+        dist = {
+            "meanConfidenceLow95": 1000.0,
+            "positiveRate": 1.0,
+            "sharpeLike": 8.0,
+            "mean": 7500.0,
+        }
+        dd = {"mean_max_drawdown": -450.0}  # DD/PnL = 0.06
+        result = compute_promote(dist, "HIGH", dd, pnl_per_fill=None)
         assert result["recommended"] is True
 
     def test_no_promote_low_confidence(self):
         dist = {
-            "meanConfidenceLow95": 10.0,
-            "positiveRate": 0.75,
-            "sharpeLike": 0.5,
-            "mean": 100.0,
+            "meanConfidenceLow95": 1000.0,
+            "positiveRate": 1.0,
+            "sharpeLike": 15.0,
+            "mean": 16000.0,
         }
-        dd = {"mean_max_drawdown": -100.0}
+        dd = {"mean_max_drawdown": -300.0}
         result = compute_promote(dist, "MEDIUM", dd)
         assert result["recommended"] is False
 
     def test_no_promote_low_sharpe(self):
+        """Sharpe below 5.0 threshold."""
         dist = {
             "meanConfidenceLow95": 10.0,
             "positiveRate": 0.75,
-            "sharpeLike": 0.1,
-            "mean": 100.0,
+            "sharpeLike": 3.5,
+            "mean": 5000.0,
         }
         dd = {"mean_max_drawdown": -100.0}
         result = compute_promote(dist, "HIGH", dd)
         assert result["recommended"] is False
+        assert "Sharpe-like 3.50 <= 5.0" in result["reason"]
+
+    def test_no_promote_high_dd_ratio(self):
+        """DD/PnL ratio above 0.15."""
+        dist = {
+            "meanConfidenceLow95": 100.0,
+            "positiveRate": 1.0,
+            "sharpeLike": 6.0,
+            "mean": 5000.0,
+        }
+        dd = {"mean_max_drawdown": -1000.0}  # DD/PnL = 0.20
+        result = compute_promote(dist, "HIGH", dd)
+        assert result["recommended"] is False
+        assert "DD/PnL ratio" in result["reason"]
+
+    def test_no_promote_low_efficiency(self):
+        """Low PnL per fill blocks promotion."""
+        dist = {
+            "meanConfidenceLow95": 100.0,
+            "positiveRate": 1.0,
+            "sharpeLike": 6.0,
+            "mean": 5000.0,
+        }
+        dd = {"mean_max_drawdown": -500.0}  # DD/PnL = 0.10
+        result = compute_promote(dist, "HIGH", dd, pnl_per_fill=0.17)
+        assert result["recommended"] is False
+        assert "PnL/fill" in result["reason"]
 
 
 class TestPnlConcentration:
@@ -164,6 +205,25 @@ class TestBuildPacket:
         assert "diagnosis" in short
         assert isinstance(short["diagnosis"], str)
         assert len(short["diagnosis"]) > 10
+
+        # New Task 2/3 fields
+        assert "efficiency" in short
+        eff = short["efficiency"]
+        assert "pnl_per_fill" in eff
+        assert "pnl_per_tick" in eff
+        assert "total_strategy_fills" in eff
+        assert "fills_per_session" in eff
+
+        assert "scale" in short
+        sc = short["scale"]
+        assert sc["session_count"] == 100
+        assert sc["sample_session_count"] == 2
+        assert sc["ticks_per_session"] is not None
+        assert sc["pnl_scope"] == "all_sessions"
+        assert sc["fill_and_drawdown_scope"] == "sample_sessions"
+
+        assert "simulation_confidence" in short
+        assert "external_validity_note" in short
 
     def test_full_extends_short(self, output_dir, dashboard_dict):
         ledger = build_event_ledger(output_dir)

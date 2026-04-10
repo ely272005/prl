@@ -47,6 +47,15 @@ class TestEndToEnd:
         assert short["kill"]["recommended"] is False  # profitable strategy
         assert len(short["warnings"]) > 0  # sample-only warnings
 
+        # Efficiency and scale fields (Step 3.5 Tasks 2/3)
+        assert short["efficiency"]["pnl_per_fill"] is not None
+        assert short["efficiency"]["pnl_per_tick"] is not None
+        assert short["efficiency"]["total_strategy_fills"] > 0
+        assert short["scale"]["ticks_per_session"] is not None
+        assert short["scale"]["ticks_per_session_source"] == "auto_detected"
+        assert short["simulation_confidence"] == short["confidence"]
+        assert "not calibrated" in short["external_validity_note"].lower()
+
         # Validate full extends short
         assert "fill_quality_full" in full
         assert "inventory_full" in full
